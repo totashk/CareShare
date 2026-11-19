@@ -1,0 +1,1 @@
+<?php layout_start('Page not found'); ?><div class="empty-state"><div class="empty-icon">?</div><h1>Page not found</h1><p>The page you requested is not available.</p><a class="button secondary" href="?page=dashboard">Back to dashboard</a></div><?php layout_end();

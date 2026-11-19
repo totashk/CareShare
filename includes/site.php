@@ -1,0 +1,301 @@
+<?php
+declare(strict_types=1);
+
+require_once __DIR__ . '/bootstrap.php';
+
+
+if (!function_exists('mb_strlen'))  { function mb_strlen(string $s): int { return preg_match_all('/./su', $s) ?: 0; } }
+if (!function_exists('mb_substr'))  { function mb_substr(string $s, int $start, ?int $len = null): string { preg_match_all('/./su', $s, $m); return implode('', array_slice($m[0], $start, $len)); } }
+if (!function_exists('mb_strtolower')) { function mb_strtolower(string $s): string { return strtolower($s); } }
+if (!function_exists('mb_strimwidth')) {
+    function mb_strimwidth(string $s, int $start, int $width, string $trim = ''): string {
+        if (mb_strlen($s) <= $width) return $s;
+        return rtrim(mb_substr($s, $start, max(0, $width - mb_strlen($trim)))) . $trim;
+    }
+}
+
+
+const SITE_CONTACT = [
+    'email'   => 'info@careshare.ly',  
+    'phone'   => '+218 91 0009191',   
+    'address' => 'Libya, Tripoli',   
+    'hours'   => 'Always Open',   
+];
+const MAX_LOAN_DAYS = 90;        
+const MAX_OPEN_REQUESTS = 3;    
+
+function contact_value(string $key): string {
+    $v = SITE_CONTACT[$key] ?? '';
+    return $v !== '' ? h($v) : '<span class="placeholder">[to be added by the charity]</span>';
+}
+
+
+function borrower_logged_in(): bool { return isset($_SESSION['borrower']['id']); }
+
+
+function current_borrower(PDO $pdo): ?array {
+    if (!borrower_logged_in()) return null;
+    $s = $pdo->prepare("SELECT id,full_name,email,phone,address,status,registered_at,last_login_at FROM borrowers WHERE id=? AND password_hash IS NOT NULL");
+    $s->execute([(int)$_SESSION['borrower']['id']]);
+    $b = $s->fetch();
+    if (!$b || $b['status'] !== 'Active') { unset($_SESSION['borrower']); return null; }
+    return $b;
+}
+
+
+function require_borrower(PDO $pdo): array {
+    $b = current_borrower($pdo);
+    if (!$b) {
+        $next = ltrim(substr($_SERVER['REQUEST_URI'] ?? '', strlen(base_path())), '/');
+        redirect(url('pages/login.php') . '?next=' . urlencode($next));
+    }
+    return $b;
+}
+
+
+function safe_next(?string $next): string {
+    if ($next && preg_match('#^(pages|user)/[a-z-]+\.php(\?[A-Za-z0-9=&_-]*)?$#', $next)) return $next;
+    return 'user/dashboard.php';
+}
+
+function csrf_field(): string { return '<input type="hidden" name="csrf" value="' . h(csrf()) . '">'; }
+
+
+function fmt_date(?string $d): string { return $d ? date('j M Y', strtotime($d)) : '—'; }
+function valid_date(string $d): bool {
+    $dt = DateTime::createFromFormat('Y-m-d', $d);
+    return $dt && $dt->format('Y-m-d') === $d;
+}
+function status_class(string $s): string { return strtolower(str_replace(' ', '-', $s)); }
+function status_badge(string $s, ?string $label = null): string {
+    return '<span class="badge ' . h(status_class($s)) . '">' . h($label ?? $s) . '</span>';
+}
+function request_ref(int $id): string { return '#' . str_pad((string)$id, 4, '0', STR_PAD_LEFT); }
+
+
+function equipment_image(string $name, string $category): string {
+
+    $photoMap = [
+        'transit wheelchair' => 'transit-wheelchair.webp',
+        'folding walking frame' => 'folding-walking-frame.webp',
+        'quad walking stick' => 'quad-walking-cane.jpg',
+        'transfer board' => 'transfer-board.webp',
+        'adjustable walking stick' => 'adjustable-walking-stick.webp',
+
+        'standard wheelchair' => '1_ea62a5d0-1431-4e90-8ab6-6a6fce8e1171.webp',
+        'folding wheelchair' => 'lt-800-special-offers.webp',
+        'raised toilet seat' => 'ASasdaDA.webp',
+        'forearm crutches' => 'lbvnbtye5aypblhedzfo_bc1ab9f0-4d26-4f5d-9606-7ebee20913f1.webp',
+        'compact shower chair' => '1_f50aa706-0d89-4c95-bf21-37e721f138f3.webp',
+        'wheeled walking frame' => '15-04025.jpg',
+        'shower stool' => 'images.jpg'
+    ];
+
+    foreach ($photoMap as $needle => $file) {
+        if (stripos($name, $needle) !== false) {
+            return asset('images/equipment/' . $file);
+        }
+    }
+
+    $map = [
+        'wheelchair' => 'wheelchair',
+        'walking frame' => 'walking-frame',
+        'rollator' => 'walking-frame',
+        'shower' => 'shower-chair',
+        'stick' => 'walking-stick',
+        'cane' => 'walking-stick',
+        'crutch' => 'crutches',
+        'transfer' => 'transfer-board',
+        'toilet' => 'raised-toilet-seat'
+    ];
+
+    foreach ([strtolower($name), strtolower($category)] as $text) {
+        foreach ($map as $needle => $file) {
+            if (strpos($text, $needle) !== false) {
+                return asset("images/equipment/$file.svg");
+            }
+        }
+    }
+
+    return asset('images/equipment/generic.svg');
+}
+
+
+const AVAILABLE_SQL = "i.status='Available' AND i.condition_label IN ('Good','Fair')";
+
+
+function fetch_equipment(PDO $pdo, array $f = []): array {
+    $sql = "SELECT e.id,e.name,e.description,c.id category_id,c.name category,
+              COUNT(i.id) total_items,
+              COALESCE(SUM(" . AVAILABLE_SQL . "),0) available_items,
+              (SELECT MIN(l.due_date) FROM loans l JOIN equipment_items i2 ON i2.id=l.item_id
+                 WHERE i2.equipment_id=e.id AND l.returned_at IS NULL) next_return
+            FROM equipment e
+            JOIN equipment_categories c ON c.id=e.category_id
+            JOIN equipment_items i ON i.equipment_id=e.id AND i.status<>'Retired'
+            WHERE 1=1";
+    $args = [];
+    if (!empty($f['id']))       { $sql .= ' AND e.id=?'; $args[] = (int)$f['id']; }
+    if (!empty($f['category'])) { $sql .= ' AND c.id=?'; $args[] = (int)$f['category']; }
+    if (($f['q'] ?? '') !== '') {
+        $like = '%' . addcslashes($f['q'], '%_\\') . '%';
+        $sql .= ' AND (e.name LIKE ? OR e.description LIKE ? OR c.name LIKE ?)';
+        array_push($args, $like, $like, $like);
+    }
+    $sql .= ' GROUP BY e.id,e.name,e.description,c.id,c.name';
+
+    if (!empty($f['only_available'])) $sql .= ' HAVING SUM(' . AVAILABLE_SQL . ')>0';
+    $sql .= ' ORDER BY (COALESCE(SUM(' . AVAILABLE_SQL . '),0)>0) DESC,c.name,e.name';
+    $s = $pdo->prepare($sql);
+    $s->execute($args);
+    return $s->fetchAll();
+}
+function fetch_categories(PDO $pdo): array {
+    return $pdo->query("SELECT c.id,c.name,c.description,
+        (SELECT COUNT(DISTINCT e.id) FROM equipment e JOIN equipment_items i ON i.equipment_id=e.id AND i.status<>'Retired' WHERE e.category_id=c.id) models
+        FROM equipment_categories c ORDER BY c.name")->fetchAll();
+}
+function availability_badge(array $e): string {
+    return (int)$e['available_items'] > 0
+        ? '<span class="avail avail-yes">Available · ' . (int)$e['available_items'] . ' of ' . (int)$e['total_items'] . '</span>'
+        : '<span class="avail avail-no">Currently unavailable</span>';
+}
+
+
+function public_header(string $title, string $active = '', array $opts = []): void {
+    global $pdo;
+    $borrower = borrower_logged_in() ? current_borrower($pdo) : null;
+    $flash = take_flash();
+    $nav = [['home', 'index.php', 'Home'], ['about', 'pages/about.php', 'About us'], ['equipment', 'pages/equipment.php', 'Browse equipment'],
+            ['how', 'pages/how-it-works.php', 'How it works'], ['contact', 'pages/contact.php', 'Contact']];
+    $css = array_merge(['css/style.css'], $opts['css'] ?? []);
+    ?><!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title><?= h($title) ?> · CareShare</title>
+<meta name="description" content="<?= h($opts['description'] ?? 'CareShare lends reusable mobility equipment such as wheelchairs and walking frames to people in the community.') ?>">
+<link rel="icon" href="<?= h(asset('logo/favicon.svg')) ?>" type="image/svg+xml">
+<?php foreach ($css as $c): ?><link rel="stylesheet" href="<?= h(asset($c)) ?>">
+<?php endforeach; ?>
+</head>
+<body class="<?= h($opts['body'] ?? '') ?>">
+<a class="skip-link" href="#main">Skip to main content</a>
+<header class="site-header">
+  <div class="container header-inner">
+    <a class="logo-link" href="<?= h(url('index.php')) ?>"><img src="<?= h(asset('logo/careshare-logo.svg')) ?>" alt="CareShare home" width="190" height="50"></a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open menu"><span></span><span></span><span></span></button>
+    <nav id="site-nav" class="site-nav" aria-label="Main">
+      <ul class="nav-links">
+        <?php foreach ($nav as [$key, $path, $label]): ?>
+        <li><a href="<?= h(url($path)) ?>" <?= $active === $key ? 'class="active" aria-current="page"' : '' ?>><?= h($label) ?></a></li>
+        <?php endforeach; ?>
+      </ul>
+      <div class="nav-actions">
+        <?php if ($borrower): ?>
+          <a class="btn btn-outline btn-sm" href="<?= h(url('user/dashboard.php')) ?>">My account</a>
+          <form method="post" action="<?= h(url('pages/logout.php')) ?>" class="inline-form"><?= csrf_field() ?><button class="btn btn-ghost btn-sm">Log out</button></form>
+        <?php else: ?>
+          <a class="btn btn-ghost btn-sm" href="<?= h(url('pages/login.php')) ?>">Log in</a>
+          <a class="btn btn-primary btn-sm" href="<?= h(url('pages/register.php')) ?>">Register</a>
+        <?php endif; ?>
+      </div>
+    </nav>
+  </div>
+</header>
+<?php if ($flash): ?><div class="container"><div class="alert alert-<?= h($flash['type'] === 'error' ? 'error' : 'success') ?>" role="status"><?= h($flash['message']) ?></div></div><?php endif; ?>
+<main id="main">
+<?php }
+
+function public_footer(array $opts = []): void {
+    $scripts = array_merge(['js/main.js'], $opts['js'] ?? []);
+    ?></main>
+<footer class="site-footer">
+  <div class="container footer-grid">
+    <div>
+      <img src="<?= h(asset('logo/careshare-logo-white.svg')) ?>" alt="CareShare" width="190" height="50">
+      <p>A community charity project lending reusable mobility equipment to people who need it, for as long as they need it.</p>
+    </div>
+    <div>
+      <h2>Explore</h2>
+      <ul>
+        <li><a href="<?= h(url('pages/equipment.php')) ?>">Browse equipment</a></li>
+        <li><a href="<?= h(url('pages/how-it-works.php')) ?>">How it works</a></li>
+        <li><a href="<?= h(url('pages/about.php')) ?>">About us</a></li>
+        <li><a href="<?= h(url('pages/contact.php')) ?>">Contact</a></li>
+      </ul>
+    </div>
+    <div>
+      <h2>Your account</h2>
+      <ul>
+        <li><a href="<?= h(url('pages/register.php')) ?>">Register</a></li>
+        <li><a href="<?= h(url('pages/login.php')) ?>">Log in</a></li>
+        <li><a href="<?= h(url('user/dashboard.php')) ?>">My requests and loans</a></li>
+        <li><a href="<?= h(url('admin/')) ?>">Staff sign-in</a></li>
+      </ul>
+    </div>
+    <div>
+      <h2>Contact</h2>
+      <ul class="contact-list">
+        <li>Email: <?= contact_value('email') ?></li>
+        <li>Phone: <?= contact_value('phone') ?></li>
+        <li>Address: <?= contact_value('address') ?></li>
+        <li>Opening hours: <?= contact_value('hours') ?></li>
+      </ul>
+    </div>
+  </div>
+  <div class="container footer-bottom"><p>© <?= date('Y') ?> CareShare. Equipment is lent subject to staff approval and availability.</p></div>
+</footer>
+<?php foreach ($scripts as $js): ?><script src="<?= h(asset($js)) ?>"></script>
+<?php endforeach; ?>
+</body>
+</html>
+<?php }
+
+
+function public_not_found(string $what = 'page'): never {
+    http_response_code(404);
+    public_header('Not found');
+    ?><section class="section"><div class="container narrow center">
+      <h1>We couldn't find that <?= h($what) ?></h1>
+      <p class="lead">It may have been removed, or the link may be wrong.</p>
+      <p><a class="btn btn-primary" href="<?= h(url('pages/equipment.php')) ?>">Browse equipment</a> <a class="btn btn-outline" href="<?= h(url('index.php')) ?>">Go to the home page</a></p>
+    </div></section><?php
+    public_footer();
+    exit;
+}
+
+
+function request_status(array $r): array {
+    if ($r['status'] === 'Issued' && isset($r['loan_count']) && (int)$r['loan_count'] > 0 && (int)$r['loans_out'] === 0) return ['returned', 'Returned'];
+    return [status_class($r['status']), $r['status']];
+}
+function request_status_badge(array $r): string { [$c, $l] = request_status($r); return '<span class="badge ' . h($c) . '">' . h($l) . '</span>'; }
+function request_item_name(array $r): string { return $r['equipment_name'] ?: $r['category']; }
+
+
+const MY_REQUESTS_SQL = "SELECT r.id,r.status,r.start_date,r.due_date,r.created_at,r.reviewed_at,r.notes,r.quantity,r.cancelled_by_borrower,
+        c.name category,e.name equipment_name,e.id equipment_id,
+        (SELECT COUNT(*) FROM loans l WHERE l.request_id=r.id) loan_count,
+        (SELECT COUNT(*) FROM loans l WHERE l.request_id=r.id AND l.returned_at IS NULL) loans_out
+    FROM loan_requests r
+    JOIN equipment_categories c ON c.id=r.category_id
+    LEFT JOIN equipment e ON e.id=r.equipment_id";
+
+
+function account_header(string $title, string $active, array $borrower): void {
+    public_header($title, '', ['css' => ['css/user-dashboard.css'], 'body' => 'account-page']);
+    $tabs = [['dashboard', 'user/dashboard.php', 'Overview'], ['requests', 'user/requests.php', 'My requests'],
+             ['loans', 'user/loans.php', 'My loans'], ['offers', 'user/offers.php', 'My offers'], ['profile', 'user/profile.php', 'My details']];
+    ?><section class="page-banner account-banner"><div class="container">
+      <p class="eyebrow">My CareShare account</p>
+      <h1><?= h($title) ?></h1>
+      <nav class="account-tabs" aria-label="Account">
+        <?php foreach ($tabs as [$key, $path, $label]): ?><a href="<?= h(url($path)) ?>" <?= $active === $key ? 'class="active" aria-current="page"' : '' ?>><?= h($label) ?></a><?php endforeach; ?>
+        <a href="<?= h(url('pages/equipment.php')) ?>">Browse equipment</a>
+      </nav>
+    </div></section>
+    <section class="section account-section"><div class="container"><?php
+}
+function account_footer(): void { ?></div></section><?php public_footer(['js' => ['js/user-dashboard.js']]); }

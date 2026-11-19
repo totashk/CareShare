@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 100" role="img" aria-labelledby="title desc">
+ <title id="title">CareShare</title>
+ <desc id="desc">CareShare community equipment lending: a person in a wheelchair forming the letter C.</desc>
+ <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M80.6 22.5A41 41 0 1 0 80.6 77.5" stroke="#FFFFFF" stroke-width="9"/>
+  <circle cx="45" cy="27" r="6.5" fill="#FFFFFF" stroke="none"/>
+  <path d="M44 37L43 54" stroke="#FFFFFF" stroke-width="7"/>
+  <path d="M44 43L57 49" stroke="#FFFFFF" stroke-width="5"/>
+  <path d="M43 55L58 55L61 70" stroke="#FFFFFF" stroke-width="6"/>
+  <path d="M61 70L67 70" stroke="#FFFFFF" stroke-width="5"/>
+  <circle cx="41" cy="63" r="12.5" stroke="#BFE3FA" stroke-width="4"/>
+  <circle cx="41" cy="63" r="2.5" fill="#BFE3FA" stroke="none"/>
+ </g>
+ <text x="108" y="57" fill="#FFFFFF" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" font-weight="700" font-size="40" letter-spacing="-1">CareShare</text>
+ <text x="110" y="79" fill="#BFE3FA" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" font-size="11" font-weight="600" letter-spacing="2.4">COMMUNITY EQUIPMENT</text>
+</svg>

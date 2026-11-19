@@ -1,0 +1,1 @@
+<?php layout_start('Access denied'); ?><div class="empty-state"><div class="empty-icon">⌑</div><h1>Access restricted</h1><p>Your account does not have permission to open this page.</p><a class="button secondary" href="?page=dashboard">Back to dashboard</a></div><?php layout_end();
